@@ -4,34 +4,30 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
-import com.example.composetutorial.ui.theme.ComposeTutorialTheme
-import androidx.compose.foundation.layout.Column
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.ui.Alignment
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.CardDefaults
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.unit.dp
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.example.composetutorial.ui.theme.ComposeTutorialTheme
+import kotlinx.serialization.Serializable
 
+// Using @Serializable objects for type-safe navigation
+@Serializable
+object MainScreen
+
+@Serializable
+object InfoScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,12 +35,41 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             ComposeTutorialTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    GreetingImage(
-                        message = "Happy Birthday!",
-                        from = "- Emma",
-                        modifier = Modifier.padding(innerPadding)
-                    )
+                // Initializing navigation controller
+                val navController = rememberNavController()
+
+                NavHost(
+                    navController = navController,
+                    startDestination = MainScreen
+                ) {
+                    // Main View (HW1)
+                    composable<MainScreen> {
+                        Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                            GreetingImage(
+                                message = "Happy Birthday!",
+                                from = "- Emma",
+                                modifier = Modifier.padding(innerPadding),
+                                onNavigateToInfo = {
+                                    navController.navigate(InfoScreen)
+                                }
+                            )
+                        }
+                    }
+
+                    // Secondary View (HW2)
+                    composable<InfoScreen> {
+                        InfoScreen(
+                            onBackToMain = {
+                                // Preventing circular navigation
+                                // Using popUpTo with inclusive = true clears the backstack
+                                // up to MainScreen and replaces it, ensuring the back button
+                                // exits the app from the main view instead of looping.
+                                navController.navigate(MainScreen) {
+                                    popUpTo(MainScreen) { inclusive = true }
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -52,10 +77,13 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun GreetingImage(message: String, from: String, modifier: Modifier = Modifier) {
-
+fun GreetingImage(
+    message: String,
+    from: String,
+    onNavigateToInfo: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     var isClicked by remember { mutableStateOf(false) }
-
     val scrollState = rememberScrollState()
 
     Column(
@@ -66,16 +94,17 @@ fun GreetingImage(message: String, from: String, modifier: Modifier = Modifier) 
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // HW1: Interactive profile picture
         Image(
             painter = painterResource(R.drawable.profile_picture),
-            contentDescription = null,
+            contentDescription = "Profile Picture",
             modifier = Modifier
-                .size(250.dp) //size of picture
-                .padding(bottom = 24.dp) //space between text and picture
-                .clickable { isClicked = !isClicked}
+                .size(250.dp)
+                .padding(bottom = 24.dp)
+                .clickable { isClicked = !isClicked }
         )
         Text(
-            text = if (isClicked) "surprise!!!" else message,
+            text = if (isClicked) "Surprise!!!" else message,
             style = MaterialTheme.typography.headlineMedium,
             textAlign = TextAlign.Center
         )
@@ -85,13 +114,29 @@ fun GreetingImage(message: String, from: String, modifier: Modifier = Modifier) 
             modifier = Modifier.padding(top = 8.dp),
             textAlign = TextAlign.Center
         )
-        repeat(10) {index ->
+
+        // HW2: Navigation button to move to the next screen
+        Button(
+            onClick = onNavigateToInfo,
+            modifier = Modifier.padding(top = 24.dp)
+        ) {
+            Text("Go to Info Screen")
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // HW1: List of greeting cards
+        repeat(5) { index ->
             Card(
-                modifier = Modifier.padding(vertical = 8.dp).fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                modifier = Modifier
+                    .padding(vertical = 8.dp)
+                    .fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
             ) {
                 Text(
-                    text = "Onnittelu nro ${index + 1}",
+                    text = "Greeting no. ${index + 1}",
                     modifier = Modifier.padding(16.dp),
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -100,13 +145,27 @@ fun GreetingImage(message: String, from: String, modifier: Modifier = Modifier) 
     }
 }
 
-@Preview(showBackground = true)
 @Composable
-fun GreetingImagePreview() {
-    ComposeTutorialTheme {
-        GreetingImage(
-            message = "Happy Birthday!",
-            from = "- Emma"
+fun InfoScreen(onBackToMain: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "Info View",
+            style = MaterialTheme.typography.displaySmall,
+            color = MaterialTheme.colorScheme.primary
         )
+        Text(
+            text = "This is the second view for the assignment.",
+            modifier = Modifier.padding(vertical = 16.dp),
+            textAlign = TextAlign.Center
+        )
+
+        // HW2: Button to return to the main view
+        Button(onClick = onBackToMain) {
+            Text("Back to Main Page")
+        }
     }
 }
