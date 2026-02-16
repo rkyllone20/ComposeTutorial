@@ -1,7 +1,11 @@
 package com.example.composetutorial
 
+import android.Manifest
+import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -12,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -36,8 +41,13 @@ class MainActivity : ComponentActivity() {
 
             NavHost(navController = navController, startDestination = DisplayRoute) {
                 composable<DisplayRoute> {
-                    val user = userDao.getUser() ?: UserProfile(name = "No name set", imagePath = null)
-                    DisplayScreen(user) { navController.navigate(EditRoute) }
+                    val userState = remember { mutableStateOf<UserProfile?>(null) }
+                    LaunchedEffect(Unit) {
+                        userState.value = userDao.getUser()
+                    }
+
+                    val user = userState.value ?: UserProfile(name = "No name set", imagePath = null)
+                    DisplayScreen(user, onEdit = { navController.navigate(EditRoute) })
                 }
                 composable<EditRoute> {
                     EditScreen(
@@ -65,6 +75,17 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun DisplayScreen(user: UserProfile, onEdit: () -> Unit) {
+    val context = LocalContext.current
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            context.startService(Intent(context, SensorService::class.java))
+            Toast.makeText(context, "Sensor Monitoring Started", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -76,7 +97,22 @@ fun DisplayScreen(user: UserProfile, onEdit: () -> Unit) {
             modifier = Modifier.size(150.dp)
         )
         Text(text = user.name, style = MaterialTheme.typography.headlineMedium)
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         Button(onClick = onEdit) { Text("Edit Profile") }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Button(onClick = {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                context.startService(Intent(context, SensorService::class.java))
+            }
+        }) {
+            Text("Start Sensor Monitoring")
+        }
     }
 }
 
