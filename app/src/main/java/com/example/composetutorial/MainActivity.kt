@@ -15,7 +15,6 @@ import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.util.Log
 import androidx.activity.ComponentActivity
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
@@ -24,6 +23,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -31,9 +32,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Park
-
-
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarOutline
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -43,13 +48,16 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
+import androidx.core.content.FileProvider
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import coil.compose.AsyncImage
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
@@ -61,6 +69,8 @@ import kotlinx.serialization.Serializable
 import retrofit2.HttpException
 import java.io.File
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 // --- REITIT ---
@@ -68,6 +78,9 @@ import java.util.Locale
 @Serializable object MapRoute
 @Serializable object DisplayRoute
 @Serializable object EditRoute
+// LogVisit uses a string argument for the park name
+const val LOG_VISIT_ROUTE = "log_visit/{parkName}"
+fun logVisitRoute(parkName: String) = "log_visit/$parkName"
 
 // --- LIPAS DATA MALLIT ---
 @Serializable
@@ -142,13 +155,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Install splash screen before anything else
         installSplashScreen()
-
         createNotificationChannel(applicationContext)
 
-        // Request POST_NOTIFICATIONS permission on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
                 != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -158,6 +167,7 @@ class MainActivity : ComponentActivity() {
 
         val db = AppDatabase.getDatabase(applicationContext)
         val userDao = db.userDao()
+        val visitDao = db.visitDao()
 
         setContent {
             val navController = rememberNavController()
@@ -184,7 +194,10 @@ class MainActivity : ComponentActivity() {
                             }
                             MapScreen(
                                 user = userState.value,
-                                onNavigateToProfile = { navController.navigate(DisplayRoute) }
+                                onNavigateToProfile = { navController.navigate(DisplayRoute) },
+                                onLogVisit = { parkName ->
+                                    navController.navigate(logVisitRoute(parkName))
+                                }
                             )
                         }
 
@@ -192,10 +205,16 @@ class MainActivity : ComponentActivity() {
                             val userState = remember {
                                 mutableStateOf(userDao.getUser() ?: UserProfile(name = "", imagePath = null))
                             }
+                            val visits = remember { mutableStateOf(visitDao.getAllVisits()) }
                             DisplayScreen(
                                 user = userState.value,
+                                visits = visits.value,
                                 onEdit = { navController.navigate(EditRoute) },
-                                onBack = { navController.popBackStack() }
+                                onBack = { navController.popBackStack() },
+                                onDeleteVisit = { visitId ->
+                                    visitDao.deleteVisit(visitId)
+                                    visits.value = visitDao.getAllVisits()
+                                }
                             )
                         }
 
@@ -205,6 +224,28 @@ class MainActivity : ComponentActivity() {
                                 userDao.saveUser(UserProfile(name = name, imagePath = path))
                                 navController.popBackStack()
                             })
+                        }
+
+                        composable(
+                            route = LOG_VISIT_ROUTE,
+                            arguments = listOf(navArgument("parkName") { type = NavType.StringType })
+                        ) { backStackEntry ->
+                            val parkName = backStackEntry.arguments?.getString("parkName") ?: ""
+                            LogVisitScreen(
+                                parkName = parkName,
+                                onSave = { rating, note, imagePath ->
+                                    visitDao.insertVisit(
+                                        Visit(
+                                            placeName = parkName,
+                                            rating = rating,
+                                            note = note,
+                                            imagePath = imagePath
+                                        )
+                                    )
+                                    navController.popBackStack()
+                                },
+                                onBack = { navController.popBackStack() }
+                            )
                         }
                     }
                 }
@@ -255,11 +296,171 @@ fun extractLatLon(obj: com.google.gson.JsonObject): Pair<Double, Double>? {
 
 // --- NÄKYMÄT ---
 
+// --- REUSABLE PHOTO PICKER SHEET ---
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PhotoPickerSheet(
+    currentUri: Uri?,
+    isCircle: Boolean = true,
+    onUriSelected: (Uri?) -> Unit
+) {
+    val context = LocalContext.current
+    var showSheet by remember { mutableStateOf(false) }
+
+    // Gallery picker
+    val galleryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri -> if (uri != null) onUriSelected(uri) }
+
+    // Camera setup
+    val cameraFile = remember { File(context.filesDir, "profile_cam_temp.jpg") }
+    val cameraUri = remember {
+        FileProvider.getUriForFile(context, "${context.packageName}.provider", cameraFile)
+    }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK &&
+            cameraFile.exists() && cameraFile.length() > 0) {
+            val permanent = File(context.filesDir, "profile_${System.currentTimeMillis()}.jpg")
+            cameraFile.copyTo(permanent, overwrite = true)
+            onUriSelected(Uri.fromFile(permanent))
+        }
+    }
+    val cameraPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            val intent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                putExtra(android.provider.MediaStore.EXTRA_OUTPUT, cameraUri)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            cameraLauncher.launch(intent)
+        }
+    }
+
+    fun launchCamera() {
+        val intent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+            putExtra(android.provider.MediaStore.EXTRA_OUTPUT, cameraUri)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        if (context.checkSelfPermission(android.Manifest.permission.CAMERA)
+            == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            cameraLauncher.launch(intent)
+        } else {
+            cameraPermLauncher.launch(android.Manifest.permission.CAMERA)
+        }
+    }
+
+    // Profile picture display
+    val shape = if (isCircle) CircleShape else RoundedCornerShape(16.dp)
+    Box(
+        modifier = Modifier
+            .then(if (isCircle) Modifier.size(120.dp) else Modifier.fillMaxWidth().height(200.dp))
+            .clip(shape)
+            .border(2.dp, MaterialTheme.colorScheme.primary, shape)
+            .background(Color(0xFFEEEEEE))
+            .clickable { showSheet = true },
+        contentAlignment = Alignment.Center
+    ) {
+        if (currentUri != null) {
+            AsyncImage(
+                model = currentUri,
+                contentDescription = "Kuva",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize().clip(shape)
+            )
+            // Edit overlay
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x44000000), shape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.PhotoCamera, contentDescription = null,
+                    tint = Color.White, modifier = Modifier.size(32.dp))
+            }
+        } else {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    Icons.Default.PhotoCamera,
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Lisää kuva",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+
+    // Source picker bottom sheet
+    if (showSheet) {
+        ModalBottomSheet(onDismissRequest = { showSheet = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 40.dp)
+            ) {
+                Text("Valitse kuvan lähde", style = MaterialTheme.typography.titleMedium)
+                Spacer(modifier = Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Camera option
+                    OutlinedCard(
+                        modifier = Modifier.weight(1f).clickable {
+                            showSheet = false
+                            launchCamera()
+                        }
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp).fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(Icons.Default.PhotoCamera, contentDescription = null,
+                                modifier = Modifier.size(36.dp),
+                                tint = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Kamera", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                    // Gallery option
+                    OutlinedCard(
+                        modifier = Modifier.weight(1f).clickable {
+                            showSheet = false
+                            galleryLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        }
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp).fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(Icons.Default.PhotoLibrary, contentDescription = null,
+                                modifier = Modifier.size(36.dp),
+                                tint = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Galleria", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun SetupScreen(onComplete: (String, Uri?) -> Unit) {
     var name by remember { mutableStateOf("") }
     var imageUri by remember { mutableStateOf<Uri?>(null) }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { imageUri = it }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),
@@ -272,23 +473,11 @@ fun SetupScreen(onComplete: (String, Uri?) -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(modifier = Modifier.height(40.dp))
 
-        Box(
-            modifier = Modifier.size(120.dp).clip(CircleShape)
-                .border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
-                .clickable { launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-            contentAlignment = Alignment.Center
-        ) {
-            if (imageUri != null) {
-                AsyncImage(model = imageUri, contentDescription = "Profiilikuva",
-                    contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().clip(CircleShape))
-            } else {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("📷", style = MaterialTheme.typography.headlineMedium)
-                    Text("Lisää kuva", style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary)
-                }
-            }
-        }
+        PhotoPickerSheet(
+            currentUri = imageUri,
+            isCircle = true,
+            onUriSelected = { imageUri = it }
+        )
 
         Spacer(modifier = Modifier.height(24.dp))
         TextField(value = name, onValueChange = { name = it }, label = { Text("Nimesi") },
@@ -301,8 +490,9 @@ fun SetupScreen(onComplete: (String, Uri?) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
+fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit, onLogVisit: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val oulu = LatLng(65.0121, 25.4651)
@@ -318,13 +508,16 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
     var searchQuery by remember { mutableStateOf("") }
     var showSuggestions by remember { mutableStateOf(false) }
 
-    // Hakuehdotukset — suodatetaan paikannimen mukaan
+    // Bottom sheet state for selected park
+    var selectedPlace by remember { mutableStateOf<LipasPlace?>(null) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showSheet by remember { mutableStateOf(false) }
+
     val filteredPlaces = remember(searchQuery, places) {
         if (searchQuery.isBlank()) emptyList()
         else places.filter { it.name.contains(searchQuery, ignoreCase = true) }
     }
 
-    // Puheentunnistus
     val speechIntent = remember {
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -342,7 +535,6 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
         showSuggestions = true
     }
 
-    // Yö/päivätila -ilmoitus
     LaunchedEffect(isNightMode) {
         if (prevNightMode.value != null && prevNightMode.value != isNightMode) {
             sendModeNotification(context, isNightMode)
@@ -350,7 +542,6 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
         prevNightMode.value = isNightMode
     }
 
-    // Valoanturi
     DisposableEffect(Unit) {
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val lightSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT)
@@ -365,7 +556,6 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
         onDispose { sensorManager.unregisterListener(listener) }
     }
 
-    // Puistodatan haku
     LaunchedEffect(Unit) {
         try {
             val results = mutableListOf<LipasPlace>()
@@ -390,6 +580,52 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
         }
     }
 
+    // Bottom sheet for selected park
+    if (showSheet && selectedPlace != null) {
+        ModalBottomSheet(
+            onDismissRequest = { showSheet = false },
+            sheetState = sheetState
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 40.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = selectedPlace!!.name,
+                    style = MaterialTheme.typography.headlineSmall
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = selectedPlace!!.typeName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(24.dp))
+                Button(
+                    onClick = {
+                        showSheet = false
+                        onLogVisit(selectedPlace!!.name)
+                    },
+                    modifier = Modifier.fillMaxWidth().height(52.dp)
+                ) {
+                    Icon(Icons.Default.CameraAlt, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Kirjaa käynti")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { showSheet = false },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Sulje")
+                }
+            }
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         if (isLoading) {
             Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -409,14 +645,19 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
                 places.forEach { place ->
                     Marker(
                         state = rememberMarkerState(position = LatLng(place.lat, place.lon)),
-                        title = place.name, snippet = place.typeName,
-                        onClick = { it.showInfoWindow(); true }
+                        title = place.name,
+                        snippet = place.typeName,
+                        onClick = {
+                            selectedPlace = place
+                            showSheet = true
+                            true
+                        }
                     )
                 }
             }
         }
 
-        // Hakupalkki + ehdotukset
+        // Search bar
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -468,7 +709,6 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
                 }
             }
 
-            // Hakuehdotukset
             if (showSuggestions && filteredPlaces.isNotEmpty()) {
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
@@ -500,18 +740,12 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
                                     tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
-                                    Text(place.name,
-                                        color = if (isNightMode) Color.White else Color.Black,
-                                        fontSize = 14.sp)
-                                    Text(place.typeName,
-                                        color = if (isNightMode) Color(0xFF888888) else Color(0xFF999999),
-                                        fontSize = 12.sp)
+                                    Text(place.name, color = if (isNightMode) Color.White else Color.Black, fontSize = 14.sp)
+                                    Text(place.typeName, color = if (isNightMode) Color(0xFF888888) else Color(0xFF999999), fontSize = 12.sp)
                                 }
                             }
                             if (index < filteredPlaces.take(5).lastIndex) {
-                                HorizontalDivider(
-                                    color = if (isNightMode) Color(0xFF3C3C3C) else Color(0xFFEEEEEE)
-                                )
+                                HorizontalDivider(color = if (isNightMode) Color(0xFF3C3C3C) else Color(0xFFEEEEEE))
                             }
                         }
                     }
@@ -519,7 +753,7 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
             }
         }
 
-        // Profiilikuva — alla statusbarista, hakupalkin oikealla puolella
+        // Profile picture button
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -537,21 +771,188 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
     }
 }
 
+// --- LOG VISIT SCREEN ---
 @Composable
-fun DisplayScreen(user: UserProfile, onEdit: () -> Unit, onBack: () -> Unit) {
+fun LogVisitScreen(parkName: String, onSave: (Int, String, String?) -> Unit, onBack: () -> Unit) {
+    val context = LocalContext.current
+    var rating by remember { mutableStateOf(0) }
+    var note by remember { mutableStateOf("") }
+    var photoPath by remember { mutableStateOf<String?>(null) }
+    var photoUri by remember { mutableStateOf<Uri?>(null) }
+
     Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        AsyncImage(model = user.imagePath ?: "https://via.placeholder.com/150",
-            contentDescription = null, contentScale = ContentScale.Crop,
-            modifier = Modifier.size(120.dp).clip(CircleShape))
-        Spacer(modifier = Modifier.height(12.dp))
-        Text(text = user.name, style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("Kirjaa käynti", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(parkName, style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.primary)
         Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onEdit, modifier = Modifier.fillMaxWidth()) { Text("Muokkaa profiilia") }
-        Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Takaisin kartalle") }
+
+        // Camera / gallery photo picker
+        PhotoPickerSheet(
+            currentUri = photoUri,
+            isCircle = false,
+            onUriSelected = { uri ->
+                if (uri != null) {
+                    photoUri = uri
+                    photoPath = uri.path
+                }
+            }
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Star rating
+        Text("Arvosana", style = MaterialTheme.typography.labelLarge)
+        Spacer(modifier = Modifier.height(8.dp))
+        Row {
+            (1..5).forEach { star ->
+                IconButton(onClick = { rating = star }) {
+                    Icon(
+                        imageVector = if (star <= rating) Icons.Default.Star else Icons.Default.StarOutline,
+                        contentDescription = "$star tähteä",
+                        tint = if (star <= rating) Color(0xFFFFC107) else Color(0xFFBBBBBB),
+                        modifier = Modifier.size(36.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Note
+        OutlinedTextField(
+            value = note,
+            onValueChange = { note = it },
+            label = { Text("Muistiinpano (valinnainen)") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Button(
+            onClick = { onSave(rating, note, photoPath) },
+            enabled = rating > 0,
+            modifier = Modifier.fillMaxWidth().height(52.dp)
+        ) {
+            Text("Tallenna käynti")
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+            Text("Peruuta")
+        }
+    }
+}
+
+// --- DISPLAY SCREEN (with visits) ---
+@Composable
+fun DisplayScreen(
+    user: UserProfile,
+    visits: List<Visit>,
+    onEdit: () -> Unit,
+    onBack: () -> Unit,
+    onDeleteVisit: (Int) -> Unit
+) {
+    val dateFormat = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        item {
+            Spacer(modifier = Modifier.height(24.dp))
+            AsyncImage(
+                model = user.imagePath ?: "https://via.placeholder.com/150",
+                contentDescription = null, contentScale = ContentScale.Crop,
+                modifier = Modifier.size(100.dp).clip(CircleShape)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = user.name, style = MaterialTheme.typography.headlineMedium)
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(onClick = onEdit, modifier = Modifier.fillMaxWidth()) { Text("Muokkaa profiilia") }
+            Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Takaisin kartalle") }
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Käyntihistoria (${visits.size})",
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+
+        if (visits.isEmpty()) {
+            item {
+                Text(
+                    "Ei vielä käyntejä. Napauta karttamerkintää aloittaaksesi!",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        items(visits) { visit ->
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                shape = RoundedCornerShape(12.dp),
+                elevation = CardDefaults.cardElevation(2.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(visit.placeName, style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.weight(1f))
+                        IconButton(onClick = { onDeleteVisit(visit.id) }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Poista",
+                                tint = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                    // Stars
+                    Row {
+                        (1..5).forEach { star ->
+                            Icon(
+                                imageVector = if (star <= visit.rating) Icons.Default.Star else Icons.Default.StarOutline,
+                                contentDescription = null,
+                                tint = if (star <= visit.rating) Color(0xFFFFC107) else Color(0xFFBBBBBB),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    if (visit.note.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(visit.note, style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (visit.imagePath != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        AsyncImage(
+                            model = visit.imagePath,
+                            contentDescription = "Käyntikuva",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxWidth().height(160.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        dateFormat.format(Date(visit.timestamp)),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        item { Spacer(modifier = Modifier.height(24.dp)) }
     }
 }
 
@@ -559,26 +960,17 @@ fun DisplayScreen(user: UserProfile, onEdit: () -> Unit, onBack: () -> Unit) {
 fun EditScreen(onSave: (String, Uri?) -> Unit) {
     var name by remember { mutableStateOf("") }
     var imageUri by remember { mutableStateOf<Uri?>(null) }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { imageUri = it }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Box(
-            modifier = Modifier.size(120.dp).clip(CircleShape)
-                .border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
-                .clickable { launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-            contentAlignment = Alignment.Center
-        ) {
-            if (imageUri != null) {
-                AsyncImage(model = imageUri, contentDescription = "Profiilikuva",
-                    contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().clip(CircleShape))
-            } else {
-                Text("📷", style = MaterialTheme.typography.headlineMedium)
-            }
-        }
+        PhotoPickerSheet(
+            currentUri = imageUri,
+            isCircle = true,
+            onUriSelected = { imageUri = it }
+        )
         Spacer(modifier = Modifier.height(16.dp))
         TextField(value = name, onValueChange = { name = it }, label = { Text("Nimi") },
             singleLine = true, modifier = Modifier.fillMaxWidth())
