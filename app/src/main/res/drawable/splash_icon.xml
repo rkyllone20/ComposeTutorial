@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+
+    <aapt:attr name="android:drawable">
+        <vector
+            android:width="108dp"
+            android:height="108dp"
+            android:viewportWidth="108"
+            android:viewportHeight="108">
+
+            <!-- Tree trunk -->
+            <group android:name="trunk">
+                <path
+                    android:name="trunk_path"
+                    android:fillColor="#5D4037"
+                    android:pathData="M47,72 L61,72 L61,90 L47,90 Z" />
+            </group>
+
+            <!-- Tree canopy bottom -->
+            <group android:name="canopy_bottom">
+                <path
+                    android:name="canopy_bottom_path"
+                    android:fillColor="#2E7D32"
+                    android:pathData="M28,72 L54,40 L80,72 Z" />
+            </group>
+
+            <!-- Tree canopy middle -->
+            <group android:name="canopy_mid">
+                <path
+                    android:name="canopy_mid_path"
+                    android:fillColor="#388E3C"
+                    android:pathData="M33,58 L54,28 L75,58 Z" />
+            </group>
+
+            <!-- Tree canopy top -->
+            <group
+                android:name="canopy_top"
+                android:pivotX="54"
+                android:pivotY="44"
+                android:scaleX="0"
+                android:scaleY="0">
+                <path
+                    android:name="canopy_top_path"
+                    android:fillColor="#43A047"
+                    android:pathData="M38,48 L54,18 L70,48 Z" />
+            </group>
+
+        </vector>
+    </aapt:attr>
+
+    <!-- Animate the top canopy scaling up -->
+    <target android:name="canopy_top">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator
+                    android:propertyName="scaleX"
+                    android:valueFrom="0"
+                    android:valueTo="1"
+                    android:duration="600"
+                    android:startOffset="200"
+                    android:interpolator="@android:interpolator/overshoot" />
+                <objectAnimator
+                    android:propertyName="scaleY"
+                    android:valueFrom="0"
+                    android:valueTo="1"
+                    android:duration="600"
+                    android:startOffset="200"
+                    android:interpolator="@android:interpolator/overshoot" />
+            </set>
+        </aapt:attr>
+    </target>
+
+</animated-vector>

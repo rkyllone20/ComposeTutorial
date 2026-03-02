@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
@@ -28,8 +29,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.KeyboardVoice
-import androidx.compose.material.icons.filled.Nature
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Park
+
+
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -133,9 +136,26 @@ fun sendModeNotification(context: Context, isNightMode: Boolean) {
 // --- MAIN ACTIVITY ---
 
 class MainActivity : ComponentActivity() {
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* permission result handled silently */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Install splash screen before anything else
+        installSplashScreen()
+
         createNotificationChannel(applicationContext)
+
+        // Request POST_NOTIFICATIONS permission on Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+
         val db = AppDatabase.getDatabase(applicationContext)
         val userDao = db.userDao()
 
@@ -294,15 +314,17 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isNightMode by remember { mutableStateOf(false) }
-    var prevNightMode by remember { mutableStateOf<Boolean?>(null) }
+    val prevNightMode = remember { mutableStateOf<Boolean?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var showSuggestions by remember { mutableStateOf(false) }
 
+    // Hakuehdotukset — suodatetaan paikannimen mukaan
     val filteredPlaces = remember(searchQuery, places) {
         if (searchQuery.isBlank()) emptyList()
         else places.filter { it.name.contains(searchQuery, ignoreCase = true) }
     }
 
+    // Puheentunnistus
     val speechIntent = remember {
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -320,13 +342,15 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
         showSuggestions = true
     }
 
+    // Yö/päivätila -ilmoitus
     LaunchedEffect(isNightMode) {
-        if (prevNightMode != null && prevNightMode != isNightMode) {
+        if (prevNightMode.value != null && prevNightMode.value != isNightMode) {
             sendModeNotification(context, isNightMode)
         }
-        prevNightMode = isNightMode
+        prevNightMode.value = isNightMode
     }
 
+    // Valoanturi
     DisposableEffect(Unit) {
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val lightSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT)
@@ -341,6 +365,7 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
         onDispose { sensorManager.unregisterListener(listener) }
     }
 
+    // Puistodatan haku
     LaunchedEffect(Unit) {
         try {
             val results = mutableListOf<LipasPlace>()
@@ -391,6 +416,7 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
             }
         }
 
+        // Hakupalkki + ehdotukset
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -437,11 +463,12 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
                     }
                 }
                 IconButton(onClick = { speechLauncher.launch(speechIntent) }) {
-                    Icon(Icons.Default.KeyboardVoice, contentDescription = "Puheentunnistus",
+                    Icon(Icons.Default.Mic, contentDescription = "Puheentunnistus",
                         tint = MaterialTheme.colorScheme.primary)
                 }
             }
 
+            // Hakuehdotukset
             if (showSuggestions && filteredPlaces.isNotEmpty()) {
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
@@ -469,7 +496,7 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
                                     .padding(horizontal = 16.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.Nature, contentDescription = null,
+                                Icon(Icons.Default.Park, contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
@@ -492,6 +519,7 @@ fun MapScreen(user: UserProfile, onNavigateToProfile: () -> Unit) {
             }
         }
 
+        // Profiilikuva — alla statusbarista, hakupalkin oikealla puolella
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
